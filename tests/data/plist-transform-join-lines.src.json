@@ -1,0 +1,3 @@
+{
+  "browserHostWhitelist": ["a.example", "b.example", "c.example"]
+}

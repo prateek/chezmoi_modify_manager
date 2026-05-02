@@ -3,6 +3,7 @@
 // Doc comments are used to generate --help, not to for rustdoc.
 #![allow(clippy::doc_markdown)]
 
+use crate::backend;
 use crate::config;
 use crate::utils::CHEZMOI_AUTO_SOURCE_VERSION;
 use crate::utils::Chezmoi;
@@ -13,7 +14,6 @@ use anyhow::anyhow;
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
 use indoc::formatdoc;
-use ini_merge::filter::filter_ini;
 use std::fs::File;
 use std::io::Write;
 use strum::Display;
@@ -54,8 +54,8 @@ pub(crate) enum Mode {
     Smart,
 }
 
-/// Template for newly created scripts
-const TEMPLATE: &str = indoc::indoc! {r#"
+/// Template for newly created INI scripts
+const TEMPLATE_INI: &str = indoc::indoc! {r#"
     #!(PATH)
 
     (SOURCE)
@@ -65,6 +65,46 @@ const TEMPLATE: &str = indoc::indoc! {r#"
     #ignore "exact section name without brackets" "exact key name"
     #ignore regex "section.*" "key_prefix_.*"
     #transform "section" "key" transform_name read="the docs" for="more detail on transforms"
+"#};
+
+/// Template for newly created XML scripts
+const TEMPLATE_XML: &str = indoc::indoc! {r#"
+    #!(PATH)
+
+    language xml
+    source auto-path
+
+    # Add your ignores and transforms here. See `--help-syntax` for the
+    # path-matcher grammar and docs/configuration_files.md for examples.
+    #ignore path "/config/window/@width"
+    #remove path "/config/legacy"
+    #set path "/config/title/text()" "My Title"
+"#};
+
+/// Template for newly created plist (XML or binary) scripts
+const TEMPLATE_PLIST: &str = indoc::indoc! {r#"
+    #!(PATH)
+
+    language plist
+    source auto-path
+    # Default merge is shallow: only top-level keys are replaced.
+    # Use `merge deep` for a recursive dict merge.
+    #merge shallow
+    # Default output is binary plist; uncomment `output xml` if your live
+    # file is XML and you want stable diffs (so the on-disk shape doesn't
+    # flip to binary on first apply).
+    #output xml
+
+    # The source file alongside this script may be `.src.plist` (XML or
+    # binary) or `.src.json` (JSON, decoded then merged). Single-file mode
+    # via the `---` divider is also available; see
+    # docs/examples/plist.md.
+
+    # Add your ignores and transforms here. See `--help-syntax` and
+    # `--help-transforms` for the available directives and transforms.
+    #ignore path "Accounts[name=\"main\"].Password"
+    #transform path "browserHostWhitelist" join-lines
+    #transform path "shortcuts" flatten-keys prefix="shortcut." data-encode-values
 "#};
 
 const SOURCE_NEW: &str = "source auto";
@@ -79,13 +119,80 @@ const IN_PATH: &str = "/usr/bin/env chezmoi_modify_manager";
 const IN_SRC: &str =
     "{{ .chezmoi.sourceDir }}/.utils/chezmoi_modify_manager-{{ .chezmoi.os }}-{{ .chezmoi.arch }}";
 
-/// Format the template
-fn template(path: &str, version: &ChezmoiVersion) -> String {
-    let result = TEMPLATE.replace("(PATH)", path);
-    if version < &CHEZMOI_AUTO_SOURCE_VERSION {
-        result.replace("(SOURCE)", SOURCE_OLD)
+/// The detected source-file format used to pick a skeleton template.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InputFormat {
+    /// Default: INI (or anything we don't recognise).
+    Ini,
+    /// XML, but not a `<plist>` document.
+    Xml,
+    /// XML plist (`<?xml ... <plist ...>`).
+    PlistXml,
+    /// Binary plist (`bplist00...`).
+    PlistBinary,
+}
+
+/// Sniff the input bytes and return the most-specific format we can
+/// recognise. Falls back to [`InputFormat::Ini`] for anything we don't
+/// recognise.
+pub(crate) fn detect_input_format(bytes: &[u8]) -> InputFormat {
+    if bytes.starts_with(b"bplist00") {
+        return InputFormat::PlistBinary;
+    }
+
+    // Skip a UTF-8 BOM if present so we can match `<?xml` after it.
+    let trimmed = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+    let leading: &[u8] = if trimmed.len() > 4096 {
+        &trimmed[..4096]
     } else {
-        result.replace("(SOURCE)", SOURCE_NEW)
+        trimmed
+    };
+
+    // Lossy decode for substring searches; we only use ASCII tokens.
+    let head = String::from_utf8_lossy(leading);
+
+    if head.trim_start().starts_with("<?xml") {
+        // Heuristic: search for `<plist` in the first 4 KiB. The DOCTYPE
+        // declaration for plists also names "plist" but only inside
+        // PUBLIC/SYSTEM identifiers; that still indicates a plist
+        // document, which is fine for the skeleton template.
+        if head.contains("<plist") || head.contains("//Apple//DTD PLIST") {
+            return InputFormat::PlistXml;
+        }
+        return InputFormat::Xml;
+    }
+    InputFormat::Ini
+}
+
+/// Return the sidecar source-file extension that matches the skeleton
+/// the `--add` flow will emit for a given detected [`InputFormat`].
+///
+/// The skeleton uses `source auto-path`, which looks up the sibling file
+/// by [`backend::Language::sidecar_extension`]; this helper keeps the
+/// write side of `--add` in sync with that lookup.
+pub(crate) fn sidecar_extension_for_format(format: InputFormat) -> &'static str {
+    match format {
+        InputFormat::Ini => backend::Language::Ini.sidecar_extension(),
+        InputFormat::Xml => backend::Language::Xml.sidecar_extension(),
+        InputFormat::PlistXml | InputFormat::PlistBinary => {
+            backend::Language::Plist.sidecar_extension()
+        }
+    }
+}
+
+/// Format the template for the given input format and chezmoi version.
+fn template(path: &str, version: &ChezmoiVersion, format: InputFormat) -> String {
+    match format {
+        InputFormat::PlistBinary | InputFormat::PlistXml => TEMPLATE_PLIST.replace("(PATH)", path),
+        InputFormat::Xml => TEMPLATE_XML.replace("(PATH)", path),
+        InputFormat::Ini => {
+            let result = TEMPLATE_INI.replace("(PATH)", path);
+            if version < &CHEZMOI_AUTO_SOURCE_VERSION {
+                result.replace("(SOURCE)", SOURCE_OLD)
+            } else {
+                result.replace("(SOURCE)", SOURCE_NEW)
+            }
+        }
     }
 }
 
@@ -106,7 +213,20 @@ fn add_with_script(
             .context("chezmoi couldn't find added file")?,
     };
     let src_name = src_path.file_name().context("File has no filename")?;
-    let data_path = src_path.with_file_name(format!("{src_name}.src.ini"));
+    // Sniff the *user-facing* file (not the chezmoi-staged copy) to pick a
+    // language-appropriate skeleton when the modify script doesn't yet
+    // exist. Failure to read the bytes shouldn't block the add — fall
+    // back to the INI skeleton (and the historic `.src.ini` sidecar).
+    let format = std::fs::read(path)
+        .map(|bytes| detect_input_format(&bytes))
+        .unwrap_or(InputFormat::Ini);
+    // Derive the sidecar extension from the detected format so plist/XML
+    // inputs are written to `.src.plist`/`.src.xml`, matching what the
+    // emitted skeleton's `source auto-path` will look up at apply time.
+    let data_path = src_path.with_file_name(format!(
+        "{src_name}{}",
+        sidecar_extension_for_format(format)
+    ));
     let script_path = match style {
         Style::Auto => panic!("Impossible: Auto should already have been mapped"),
         Style::InPath => src_path.with_file_name(format!("modify_{src_name}")),
@@ -114,13 +234,14 @@ fn add_with_script(
             src_path.with_file_name(format!("modify_{src_name}.tmpl"))
         }
     };
+
     // Add while respecting filtering directives
     filtered_add(&data_path, &src_path, None, status_out)?;
 
     // Remove the temporary file that chezmoi added
     std::fs::remove_file(src_path)?;
 
-    maybe_create_script(&script_path, style, status_out, &chezmoi.version()?)?;
+    maybe_create_script(&script_path, style, status_out, &chezmoi.version()?, format)?;
     Ok(())
 }
 
@@ -145,13 +266,17 @@ fn filtered_add(
             status_out,
             "Has existing modify script, parsing to check for filtering..."
         );
-        let config_data = std::fs::read_to_string(sp).context("Failed to load modify script")?;
-        internal_filter(&config_data, &file_contents)?
+        let config_data = std::fs::read(sp).context("Failed to load modify script")?;
+        internal_filter(&config_data, sp, &file_contents)?
     } else {
         file_contents
     };
 
-    if !file_contents.ends_with(b"\n") {
+    // Preserve binary plist bytes verbatim: appending a trailing `\n`
+    // would corrupt the bplist trailer. For text inputs we keep the
+    // existing newline-terminator behaviour.
+    let is_binary_plist = file_contents.starts_with(b"bplist00");
+    if !is_binary_plist && !file_contents.ends_with(b"\n") {
         file_contents.push(b'\n');
     }
 
@@ -161,20 +286,29 @@ fn filtered_add(
 }
 
 /// Perform internal filtering using add:hide and add:remove (modern filtering)
-fn internal_filter(config_data: &str, contents: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let config = config::parse_for_add(config_data)?;
-    let mut file = std::io::Cursor::new(contents);
-    let result = filter_ini(&mut file, &config.mutations)?;
-    let s: String = itertools::intersperse(result, "\n".into()).collect();
-    Ok(s.as_bytes().into())
+fn internal_filter(
+    config_data: &[u8],
+    script_path: &Utf8Path,
+    contents: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    let script = config::Script::parse(config_data, script_path)?;
+    let language = config::peek_language(&script)?;
+    let backend = backend::backend_for(language);
+    backend.filter(&script, script_path, contents)
 }
 
-/// Create a modify script if one doesn't exist
+/// Create a modify script if one doesn't exist.
+///
+/// `format` is sniffed from the source-file bytes and selects the
+/// language-appropriate skeleton: INI by default, plist when the bytes
+/// begin with `bplist00` or look like an XML plist, and XML for other
+/// XML inputs.
 fn maybe_create_script(
     script_path: &Utf8Path,
     style: Style,
     status_out: &mut impl Write,
     version: &ChezmoiVersion,
+    format: InputFormat,
 ) -> anyhow::Result<()> {
     if script_path.exists() {
         return Ok(());
@@ -189,6 +323,7 @@ fn maybe_create_script(
                 Style::InSrc => IN_SRC,
             },
             version,
+            format,
         )
         .as_bytes(),
     )?;
@@ -331,9 +466,16 @@ pub(crate) fn add_file(
             },
             _,
         ) => {
+            // Derive the extension from the actual sidecar path so the
+            // diagnostic is correct for plist/XML scripts (`.src.plist`,
+            // `.src.xml`, `.src.json`) — not just the INI default. We
+            // use the data file's whole filename suffix because chezmoi
+            // sidecars are conventionally `<basename>.src.<ext>`; the
+            // user expects to see the same thing in the action message.
+            let extension = sidecar_extension_for(&script_path);
             _ = writeln!(
                 status_out,
-                "Action: Updating existing .src.ini file for {script_path}."
+                "Action: Updating existing {extension} file for {script_path}."
             );
             filtered_add(
                 data_path.as_ref(),
@@ -394,11 +536,18 @@ fn sanity_check(
     }
 }
 
-/// Given a modify script, find the associated .src.ini file
+/// Given a modify script, find the associated sidecar source file.
+///
+/// The sidecar extension is selected by the script's `language` directive
+/// via [`backend::Language::sidecar_extension`]. Defaults to `.src.ini`
+/// when no `language` directive is present (or when the script can't be
+/// parsed; in that case we fall through and let the existence check below
+/// surface the user-facing error).
 fn find_data_file(
     modify_script: &Utf8Path,
     src_dir: &Utf8Path,
 ) -> Result<Utf8PathBuf, anyhow::Error> {
+    let extension = sidecar_extension_for(modify_script);
     let data_file = modify_script
         .file_name()
         .context("Failed to get filename")?
@@ -406,12 +555,12 @@ fn find_data_file(
         .and_then(|s| s.strip_suffix(".tmpl").or(Some(s)))
         .context("This should never happen")?
         .to_owned()
-        + ".src.ini";
+        + extension;
     let mut targeted_file: Utf8PathBuf = src_dir.into();
     targeted_file.push(data_file);
     if !targeted_file.exists() {
         let err_str = formatdoc!(
-            r#"Found existing modify_ script but no associated .src.ini file (looked at {targeted_file}).
+            r#"Found existing modify_ script but no associated {extension} file (looked at {targeted_file}).
                         Possible causes:
                         * Did you change the "source" directive from the default value?
                         * Remove the file by mistake?
@@ -421,4 +570,20 @@ fn find_data_file(
         return Err(anyhow!(err_str));
     }
     Ok(targeted_file)
+}
+
+/// Read the modify script (best-effort) and resolve its sidecar source-file
+/// extension. Falls back to `.src.ini` (the INI default) on any error so
+/// that older scripts and broken scripts still produce the same diagnostic
+/// path they did before sidecar-extension awareness was added.
+fn sidecar_extension_for(modify_script: &Utf8Path) -> &'static str {
+    let Result::Ok(bytes) = std::fs::read(modify_script) else {
+        return backend::Language::Ini.sidecar_extension();
+    };
+    let Result::Ok(script) = config::Script::parse(&bytes, modify_script) else {
+        return backend::Language::Ini.sidecar_extension();
+    };
+    config::peek_language(&script)
+        .unwrap_or_default()
+        .sidecar_extension()
 }

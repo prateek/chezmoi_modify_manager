@@ -42,6 +42,14 @@ There are two modes to add files in:
   if they are already managed, otherwise adds with plain chezmoi.
 * `-a`/`--add`: This adds or converts from plain chezmoi to managed `.src.ini`.
 
+`--add` (and `--smart-add`) sniff the input bytes and pick the matching
+sidecar extension for you: a binary or XML plist becomes `.src.plist`,
+a non-plist XML file becomes `.src.xml`, JSON-shaped input intended for
+the plist backend becomes `.src.json`, and everything else falls back to
+`.src.ini`. The skeleton script generated alongside the sidecar is
+selected to match. See [Other backends](#other-backends) below for the
+non-INI languages.
+
 Here are some examples:
 
 ```bash
@@ -118,3 +126,38 @@ is a short summary:
   a warning will be issued. You can use this directive to quieten those warnings
   if this is intentional. See [action evaluation order](actions.md#order-of-action-matching)
   for more information on this.
+
+## Other backends
+
+The discussion above is INI-specific (the historic default). You can
+also manage XML and Apple plist sources by adding a `language` directive
+to the top of the modify script. `language` defaults to `ini` when
+omitted, so existing scripts keep working unchanged.
+
+```bash
+language ini    # default; INI/properties files (`.src.ini`)
+language xml    # XML; `.src.xml`
+language plist  # Apple property list (binary or XML); `.src.plist` or `.src.json`
+```
+
+Source-file naming follows the language:
+
+* `language ini`   reads `<base>.src.ini` next to the modify script.
+* `language xml`   reads `<base>.src.xml`.
+* `language plist` reads `<base>.src.plist` (binary or XML plist) **or**
+  `<base>.src.json` (decoded as JSON, then merged). It is an error for
+  both `<base>.src.plist` and `<base>.src.json` to exist alongside the
+  same script.
+
+For these backends, prefer `source auto-path`, which lets the binary
+pick the language-specific sidecar extension. A single-file mode is
+also available: place a `---` divider in the script and put the source
+body below it. This is useful for short inline XML or plist fragments.
+
+`--add` sniffs the input bytes and writes a language-appropriate
+skeleton (including the matching `language` and `source auto-path`
+lines), so you usually don't have to wire any of this up by hand.
+
+For an end-to-end walkthrough see the
+[Plist example](./examples/plist.md), and for the per-language
+directive forms see [Syntax of configuration files](./configuration_files.md).

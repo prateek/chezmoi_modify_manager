@@ -1,5 +1,58 @@
 //! Defines supported transforms.
 
+/// Plist `transform path` documentation. The plist transforms live in
+/// `crate::config::parser::PlistTransform`; we duplicate the user-facing
+/// docs here so `--help-transforms` can render both INI and plist
+/// transforms in a single output.
+const PLIST_TRANSFORM_HELP: &str = "\
+join-lines
+----------
+Source side: array-of-strings to a single newline-joined string.
+Used by apps that store a multi-line list (e.g. host whitelists) as a
+single `<string>` containing `\\n`-separated entries. No arguments.
+
+Example:
+  transform path \"browserHostWhitelist\" join-lines
+
+json-encode
+-----------
+Source side: encode the addressed value as canonical JSON, replacing the
+original node with the resulting `<string>`. Useful when the live plist
+stores a structured value as a JSON string. No arguments.
+
+Example:
+  transform path \"sidebar\" json-encode
+
+data-encode
+-----------
+Source side: encode the addressed value as canonical JSON and wrap the
+UTF-8 bytes as `<data>` (base64). Useful for apps that store
+JSON-shaped values as `<data>` blobs in plist preferences. No
+arguments.
+
+Example:
+  transform path \"customData\" data-encode
+
+flatten-keys
+------------
+Source side: lift inner dict entries into the parent dict, prefixing
+each lifted key. The addressed value must itself be a dict.
+
+Arguments:
+  prefix=\"<string>\"        Required. Prefix added to each lifted key.
+  json-encode-values        Optional flag. Each lifted value is replaced
+                            with its canonical JSON encoding (`<string>`).
+  data-encode-values        Optional flag. Each lifted value is replaced
+                            with `<data>` containing UTF-8 JSON bytes.
+
+`json-encode-values` and `data-encode-values` are mutually exclusive.
+
+Example:
+  transform path \"shortcuts\" flatten-keys prefix=\"shortcut.\" data-encode-values
+
+For an end-to-end walkthrough see docs/examples/plist.md and the
+RFC at docs/dev/xml_support_rfc.md.";
+
 use ini_merge::mutations::transforms as ini_transforms;
 use std::collections::HashMap;
 use strum::EnumIter;
@@ -58,12 +111,17 @@ impl Transform {
         });
         println!("Supported transforms:");
         println!("====================\n");
+        println!("INI transforms (used with `transform \"section\" \"key\" ...`):\n");
         // Workaround for https://github.com/rust-itertools/itertools/issues/942
         use itertools::Itertools;
         println!(
             "{}",
             Itertools::intersperse(docs, "\n\n".to_string()).collect::<String>()
         );
+
+        println!("\n\nPlist transforms (used with `transform path \"<selector>\" ...`):");
+        println!("---------------------------------------------------------------\n");
+        println!("{PLIST_TRANSFORM_HELP}");
     }
 
     /// Construct transform with arguments

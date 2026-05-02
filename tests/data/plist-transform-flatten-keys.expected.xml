@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>existingKey</key>
+	<integer>1</integer>
+	<key>shortcut.open</key>
+	<string>{&quot;key&quot;:&quot;Cmd-O&quot;}</string>
+	<key>shortcut.save</key>
+	<string>{&quot;key&quot;:&quot;Cmd-S&quot;}</string>
+</dict>
+</plist>

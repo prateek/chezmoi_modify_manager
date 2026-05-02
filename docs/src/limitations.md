@@ -13,3 +13,10 @@ Here are some known limitations of `chezmoi_modify_manager`:
   Always look at `chezmoi diff` first! I do have some ideas on how to mitigate
   this in the future. See also [this chezmoi bug](https://github.com/twpayne/chezmoi/issues/2244)
   for a more detailed discussion on this.
+* For `language plist`, an empty stdin (no live file on disk yet) is
+  silently coerced to an empty top-level dict. The first time you
+  `chezmoi apply` a newly-added plist script you may therefore see
+  *every* key from the source state appear in the diff — the live file
+  simply did not exist. This only applies to plist; INI and XML treat
+  missing live files separately. A non-empty but non-dict live still
+  errors as expected.

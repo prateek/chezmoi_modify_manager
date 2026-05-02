@@ -1,0 +1,9 @@
+#!/this/line/is/ignored/for/integration/tests
+
+language plist
+source auto-path
+merge shallow
+output xml
+transform path "browserHostWhitelist" join-lines
+transform path "sidebar" json-encode
+transform path "shortcuts" flatten-keys prefix="shortcut." json-encode-values

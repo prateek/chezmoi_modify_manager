@@ -1,0 +1,6 @@
+{
+  "Accounts": [
+    {"name": "other", "Password": "src-other"},
+    {"name": "main", "Password": "src-main"}
+  ]
+}

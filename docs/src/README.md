@@ -2,7 +2,7 @@
 
 `chezmoi_modify_manager` is an addon for [chezmoi](https://www.chezmoi.io/)
 that deals with settings files that contain a mix of settings and state.
-So far handling INI-style files are supported.
+INI, XML, and Apple plist (binary or XML) files are supported.
 
 A typical example of this is KDE settings files. These contain (apart from
 settings) state like recently opened files and positions of windows and dialog
@@ -28,3 +28,6 @@ versions or newer in-development versions.
   * etc.
 * Assisted adding/updating of files in your chezmoi source state.
 * *Optional* built in self-updater
+* XML and Apple plist (binary or XML) backends in addition to INI. See
+  [Basic Usage](./basic_usage.md#other-backends) for an overview and
+  [Plist example](./examples/plist.md) for a worked walkthrough.

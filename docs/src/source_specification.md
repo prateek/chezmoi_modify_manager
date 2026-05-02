@@ -56,6 +56,66 @@ The main benefit of the simpler `source auto` is that if your modify script
 *doesn't need* to be a template for any other reason, it will speed up execution,
 as chezmoi no longer needs to run its template engine.
 
+### Per-language source files
+
+The discussion above is INI-specific. The XML and plist backends work
+the same way but pick a different sidecar extension based on the
+script's `language` directive. For the new backends, prefer
+`source auto-path`:
+
+```bash
+language xml
+source auto-path     # reads `<base>.src.xml`
+```
+
+```bash
+language plist
+source auto-path     # reads `<base>.src.plist` or `<base>.src.json`
+```
+
+The resolution rules are:
+
+* `language ini`   → `<base>.src.ini` (default; the same thing the
+  historic `source auto` form has always done).
+* `language xml`   → `<base>.src.xml`.
+* `language plist` → `<base>.src.plist` (binary or XML plist) **or**
+  `<base>.src.json` (a JSON document, decoded then merged into the live
+  plist tree). If both `<base>.src.plist` and `<base>.src.json` are
+  present alongside the same script the run aborts with an error — pick
+  one.
+
+`source auto-path` differs from `source auto` only in that it derives
+the sibling filename from the modify script's name rather than relying
+on `CHEZMOI_SOURCE_*` envs. It works on every chezmoi version that
+exposes the script path on disk.
+
+### Inline (single-file) mode
+
+For short or tightly-coupled sources you can skip the sidecar entirely
+and embed the source body inline using a `---` divider:
+
+```bash
+#!/usr/bin/env chezmoi_modify_manager
+language plist
+merge shallow
+output xml
+---
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" ...>
+<plist version="1.0">
+  <dict>...</dict>
+</plist>
+```
+
+Everything above the first `---` line is parsed as directives; everything
+below is the source body, fed straight to the backend. The body's
+encoding must match the active `language` (XML for `language xml` and
+`language plist`; INI text for `language ini`).
+
+When inline mode is in effect the `source` directive is omitted — any
+form of it (`source "..."`, `source auto`, `source auto-path`) is
+mutually exclusive with `---`.
+
 ### Overriding auto detection
 
 Auto-detection has one downside though: What if you use multiple versions of
