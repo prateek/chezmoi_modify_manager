@@ -11,6 +11,7 @@
 - [Examples](./examples/README.md)
     - [Ignores & transforms](./examples/basics.md)
     - [Advanced: set, remove, add:*](./examples/advanced.md)
+    - [Plist (macOS Dock walkthrough)](./examples/plist.md)
 - [Migration](./migration/README.md)
     - [Migration from version 1.x to 2.x](./migration/migration_2.md)
     - [Migration from version 2.x to 3.x](./migration/migration_3.md)
@@ -27,3 +28,4 @@
 
 - [Packaging for Linux distros etc](./dev/packaging.md)
 - [Design decisions](./dev/design_decisions.md)
+- [RFC: XML and plist support](./dev/xml_support_rfc.md)

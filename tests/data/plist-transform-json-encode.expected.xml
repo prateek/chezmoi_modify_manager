@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>existingKey</key>
+	<true/>
+	<key>sidebar</key>
+	<string>{&quot;showFavorites&quot;:true,&quot;width&quot;:240}</string>
+</dict>
+</plist>

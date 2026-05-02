@@ -8,15 +8,17 @@ use anyhow::Context;
 pub use arguments::ChmmArgs;
 pub use arguments::parse_args;
 use indoc::printdoc;
-use ini_merge::merge::merge_ini;
-use std::fs::File;
 use std::io::Read;
 use std::io::Write;
 
 mod add;
 mod arguments;
+mod backend;
 mod config;
 mod doctor;
+mod path;
+#[cfg(test)]
+mod test_support;
 mod transforms;
 mod update;
 mod utils;
@@ -42,22 +44,18 @@ where
 {
     match opts {
         ChmmArgs::Process(file_name) => {
-            let buf = std::fs::read_to_string(&file_name)
-                .with_context(|| format!("Failed to load {file_name}"))?;
-            let c = config::parse_for_merge(&buf)
+            let raw =
+                std::fs::read(&file_name).with_context(|| format!("Failed to load {file_name}"))?;
+            let script = config::Script::parse(&raw, &file_name)
                 .with_context(|| format!("Failed to parse {file_name}"))?;
-
+            let language = config::peek_language(&script)
+                .with_context(|| format!("Failed to parse {file_name}"))?;
+            let backend = backend::backend_for(language);
             let mut stdin = stdin();
-            let src_path = c
-                .source_path(&file_name)
-                .context("Failed to get source path")?;
-            let mut src_file = File::open(src_path.as_std_path())
-                .with_context(|| format!("Failed to open source file at: {src_path}"))?;
-            let merged = merge_ini(&mut stdin, &mut src_file, &c.mutations)?;
             let mut stdout = stdout();
-            for line in merged {
-                writeln!(stdout, "{line}")?;
-            }
+            backend
+                .process(&script, &file_name, &mut stdin, &mut stdout)
+                .with_context(|| format!("{file_name}: backend processing failed"))?;
         }
         ChmmArgs::Add {
             _a,
@@ -133,15 +131,32 @@ where
     Ok(())
 }
 
+/// Run the re-add filter for `script_path` against `live_contents`,
+/// returning the filtered bytes that would be written to the source file.
+///
+/// Exposed so integration tests can exercise the [`Backend::filter`] path
+/// without having to drive `chezmoi add` end-to-end.
+pub fn run_filter(script_path: &camino::Utf8Path, live_contents: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let raw =
+        std::fs::read(script_path).with_context(|| format!("Failed to load {script_path}"))?;
+    let script = config::Script::parse(&raw, script_path)
+        .with_context(|| format!("Failed to parse {script_path}"))?;
+    let language =
+        config::peek_language(&script).with_context(|| format!("Failed to parse {script_path}"))?;
+    let backend = backend::backend_for(language);
+    backend.filter(&script, script_path, live_contents)
+}
+
 /// Print help for the overall syntax of the configuration language.
+#[allow(clippy::too_many_lines)]
 fn help_syntax() {
     printdoc! {r#"
     Configuration files
     ===================
 
-    chezmoi_modify_manager uses basic configuration files to control how to
-    merge INI files. The easiest way to get started is to use -a to add a file
-    and generate a skeleton configuration file.
+    chezmoi_modify_manager uses configuration files to control how to merge
+    INI, XML, or plist files. The easiest way to get started is to use -a to
+    add a file and generate a skeleton configuration file.
 
     Syntax
     ======
@@ -149,23 +164,103 @@ fn help_syntax() {
     The file consists of directives, one per line. Comments are supported by
     prefixing a line with #. Comments are only supported at the start of lines.
 
-    Directives
-    ==========
+    See also: docs/configuration_files.md, docs/transforms.md, docs/actions.md.
+
+    Directives (cross-language)
+    ===========================
+
+    language
+    --------
+    Selects the configuration-file syntax. Defaults to `ini` when omitted.
+
+    language ini    (default)
+    language xml
+    language plist
 
     source
     ------
-    This directive is required. It specifies where to find the source file
-    (i.e. the file in the dotfile repo). It should have the following format
-    to support Chezmoi versions older than {}:
+    Tells chezmoi_modify_manager where to find the source file. Three
+    forms are accepted across all languages:
 
-    {}
+    source "<path>"          Explicit path. Required for INI when running
+                             on Chezmoi older than {0}; typically:
+                             {1}
+    source auto              Resolve the sibling source file using the
+                             CHEZMOI_SOURCE_* environment variables
+                             (Chezmoi {0} and newer). The historic INI
+                             default; works for `language ini`.
+    source auto-path         Resolve sibling using the script's filename;
+                             recommended for `language xml`/`language
+                             plist`. Picks the language-specific sidecar
+                             extension (.src.ini / .src.xml / .src.plist).
 
-    From Chezmoi {} and forward the following also works instead:
+    Single-file mode (no sidecar): place a `---` line in the script. The
+    directives appear above the divider; the source body appears below
+    it. Useful for inline XML or plist sources.
 
-    source auto
+    See docs/source_specification.md and docs/examples/plist.md.
+
+    merge
+    -----
+    Plist only. Selects the top-level merge strategy. Defaults to `shallow`.
+
+    merge shallow   (default — only top-level keys are replaced)
+    merge deep      (recursive dict merge; arrays and scalars replace)
+
+    output
+    ------
+    Plist only. Selects the encoding written to stdout. Defaults to binary
+    plist (what macOS apps and `cfprefsd` expect).
+
+    output xml      (encode result as an XML plist)
+    output binary   (default — encode result as a binary plist)
+
+    Path-matcher directives (XML and plist)
+    =======================================
+    The XML and plist backends address nodes by an XPath-like path string
+    instead of section/key pairs. The directive forms are:
+
+    ignore path "<selector>"
+    remove path "<selector>"
+    set path "<selector>" "<literal>"
+    set path "<selector>" <type> "<literal>"
+    transform path "<selector>" <name> [arg="value"]...
+    add:hide path "<selector>"
+    add:remove path "<selector>"
+
+    The optional `<type>` on `set path` is plist-only. Valid tags:
+      string   UTF-8 text                (`<string>`)
+      integer  base-10 signed integer    (`<integer>`)
+      real     IEEE-754 floating point   (`<real>`)
+      data     base64-encoded bytes      (`<data>`)
+      date     ISO-8601 timestamp        (`<date>`)
+    Omit the tag when the existing scalar's type is unambiguous; the
+    parser infers it. The XML backend rejects type tags.
+
+    Plist selector examples:
+      "NSGlobalDomain.AppleLanguages"
+      "Accounts[0].Password"
+      "Accounts[*].Password"
+      "Accounts[name=\"main\"].Password"   (or single-quoted: [name='main'])
+
+    XML selector examples:
+      "/config/window/@width"
+      "/gui/Action[@name=\"open\"]/@shortcut"
+      "/config/title/text()"
+
+    See `--help-transforms` for the supported `transform path` names
+    (including the plist-only `join-lines`, `json-encode`, `data-encode`,
+    `flatten-keys`).
+
+    Directives (INI)
+    ================
+    The remaining directives below are INI-specific. The `source`
+    directive is documented in the cross-language section above.
 
     ignore
     ------
+    XML/plist scripts use `ignore path "..."`; see Path-matcher above.
+
     Ignore a certain line, always taking it from the target file (i.e. file in
     your home directory), instead of the source state. The following variants
     are supported:
@@ -191,6 +286,8 @@ fn help_syntax() {
 
     set
     ---
+    XML/plist scripts use `set path "..." "..."`; see Path-matcher above.
+
     Set an entry to a specific value. This is primarily useful together with
     chezmoi templates, allowing you to override a specific value for only some
     of your computers. The following variants are supported:
@@ -209,6 +306,8 @@ fn help_syntax() {
 
     remove
     ------
+    XML/plist scripts use `remove path "..."`; see Path-matcher above.
+
     Unconditionally remove everything matching the directive. This is primarily
     useful together with chezmoi templates, allowing you to remove a specific
     key or section for only some of your computers. The following variants are
@@ -222,6 +321,9 @@ fn help_syntax() {
 
     transform
     ---------
+    XML/plist scripts use `transform path "..." <name> [arg="..."]...`;
+    see Path-matcher above.
+
     Some specific situations need more complicated merging that a simple
     ignore. For those situations you can use transforms. Supported variants
     are:
@@ -242,6 +344,9 @@ fn help_syntax() {
 
     add:remove & add:hide
     ---------------------
+    XML/plist scripts use `add:remove path "..."` and `add:hide path "..."`;
+    see Path-matcher above.
+
     These two directives control the behaviour when using --add or --smart-add.
     In particular, these allow filtering lines that will be added back to the
     source state.
@@ -273,6 +378,5 @@ fn help_syntax() {
     actually "know what you are doing" and want to suppress it.
     "#,
     CHEZMOI_AUTO_SOURCE_VERSION,
-    r#"source "{{ .chezmoi.sourceDir }}/{{ .chezmoi.sourceFile | trimSuffix ".tmpl" | replace "modify_" "" }}.src.ini""#,
-    CHEZMOI_AUTO_SOURCE_VERSION};
+    r#"source "{{ .chezmoi.sourceDir }}/{{ .chezmoi.sourceFile | trimSuffix ".tmpl" | replace "modify_" "" }}.src.ini""#};
 }

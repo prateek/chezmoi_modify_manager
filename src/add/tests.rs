@@ -106,7 +106,11 @@ fn get_dummy_file_contents(dummy_file_name: &str) -> String {
 #[test]
 fn check_filtering() {
     for test_case in FILTER_TESTS {
-        let result = internal_filter(test_case.cfg, test_case.input.as_bytes());
+        let result = internal_filter(
+            test_case.cfg.as_bytes(),
+            Utf8Path::new("test://inline"),
+            test_case.input.as_bytes(),
+        );
         dbg!(&result);
         let result = result.unwrap();
         assert_eq!(
@@ -496,6 +500,50 @@ mod path_tmpl {
 
         assert_unchanged_script(&chezmoi, Style::InPathTmpl, filename);
     }
+
+    #[test]
+    fn add_log_message_uses_correct_extension_for_plist() {
+        // Round-3 regression: the "Updating existing .src.ini file"
+        // message was hardcoded — for plist/XML scripts the sidecar is
+        // `.src.plist`/`.src.xml`, so the user saw a wrong extension.
+        // The log message now derives the extension from the actual
+        // resolved sidecar path via `sidecar_extension_for`.
+        let chezmoi = DummyChezmoi::new();
+        let mut stdout: Vec<u8> = vec![];
+
+        let filename = chezmoi.dummy_file0_name.as_str();
+
+        std::fs::write(
+            chezmoi.src_dir.join(format!("{filename}.src.plist")),
+            b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>",
+        )
+        .unwrap();
+        std::fs::write(
+            chezmoi.src_dir.join(format!("modify_{filename}.tmpl")),
+            "#!/usr/bin/env chezmoi_modify_manager\nlanguage plist\nsource auto",
+        )
+        .unwrap();
+
+        add(
+            &chezmoi,
+            Mode::Normal,
+            false,
+            Style::InPathTmpl,
+            chezmoi.dummy_file0_path.as_path(),
+            &mut stdout,
+        )
+        .unwrap();
+
+        let log = String::from_utf8(stdout).unwrap();
+        assert!(
+            log.contains(".src.plist"),
+            "expected .src.plist in log, got: {log}"
+        );
+        assert!(
+            !log.contains(".src.ini"),
+            "log must not mention .src.ini for a plist script: {log}"
+        );
+    }
 }
 
 mod path {
@@ -712,5 +760,255 @@ mod recursive {
 
         assert_nothing_added(&chezmoi, chezmoi.dummy_file0_name.as_str());
         assert_nothing_added(&chezmoi, chezmoi.dummy_file1_name.as_str());
+    }
+}
+
+mod find_data_file {
+    //! `find_data_file` consults the script's `language` directive to pick
+    //! the sidecar extension. Defaults to `.src.ini` when no `language` is
+    //! present (or when the script can't be parsed).
+    use super::super::find_data_file;
+    use camino::Utf8PathBuf;
+    use pretty_assertions::assert_eq;
+    use tempfile::tempdir;
+
+    #[test]
+    fn defaults_to_src_ini_when_language_omitted() {
+        let tmp = tempdir().unwrap();
+        let dir: Utf8PathBuf = tmp.path().to_path_buf().try_into().unwrap();
+        let script = dir.join("modify_app.tmpl");
+        let data = dir.join("app.src.ini");
+        std::fs::write(&script, "source auto\n").unwrap();
+        std::fs::write(&data, "").unwrap();
+
+        let resolved = find_data_file(&script, &dir).unwrap();
+        assert_eq!(resolved, data);
+    }
+
+    #[test]
+    fn resolves_xml_sidecar() {
+        let tmp = tempdir().unwrap();
+        let dir: Utf8PathBuf = tmp.path().to_path_buf().try_into().unwrap();
+        let script = dir.join("modify_app.tmpl");
+        let data = dir.join("app.src.xml");
+        std::fs::write(&script, "language xml\nsource auto-path\n").unwrap();
+        std::fs::write(&data, "<root/>").unwrap();
+
+        let resolved = find_data_file(&script, &dir).unwrap();
+        assert_eq!(resolved, data);
+    }
+
+    #[test]
+    fn resolves_plist_sidecar() {
+        let tmp = tempdir().unwrap();
+        let dir: Utf8PathBuf = tmp.path().to_path_buf().try_into().unwrap();
+        let script = dir.join("modify_com.example.tmpl");
+        let data = dir.join("com.example.src.plist");
+        std::fs::write(&script, "language plist\nsource auto-path\n").unwrap();
+        std::fs::write(&data, "<plist/>").unwrap();
+
+        let resolved = find_data_file(&script, &dir).unwrap();
+        assert_eq!(resolved, data);
+    }
+
+    #[test]
+    fn missing_sidecar_diagnostic_names_extension() {
+        let tmp = tempdir().unwrap();
+        let dir: Utf8PathBuf = tmp.path().to_path_buf().try_into().unwrap();
+        let script = dir.join("modify_app.tmpl");
+        std::fs::write(&script, "language plist\nsource auto-path\n").unwrap();
+
+        let err = find_data_file(&script, &dir).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains(".src.plist"), "msg={msg}");
+    }
+}
+
+mod input_format {
+    //! Format-sniff tests for the `--add` skeleton emission. Each input
+    //! shape must map to its expected language-skeleton template; a
+    //! fallback to INI is used for anything we don't recognise.
+    use super::super::InputFormat;
+    use super::super::detect_input_format;
+
+    #[test]
+    fn binary_plist_is_detected() {
+        // Real binary plists begin with the `bplist00` magic.
+        let mut bytes = Vec::from(b"bplist00".as_slice());
+        bytes.extend_from_slice(&[0xd0, 0x08, 0x00, 0x00, 0x00, 0x00]);
+        assert_eq!(detect_input_format(&bytes), InputFormat::PlistBinary);
+    }
+
+    #[test]
+    fn xml_plist_is_detected() {
+        let bytes = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+            <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+            \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+            <plist version=\"1.0\"><dict/></plist>\n";
+        assert_eq!(detect_input_format(bytes), InputFormat::PlistXml);
+    }
+
+    #[test]
+    fn xml_plist_without_doctype_is_detected_via_root_tag() {
+        // Some inputs omit the DOCTYPE but still have `<plist>` near the
+        // top.
+        let bytes = b"<?xml version=\"1.0\"?>\n<plist version=\"1.0\"><dict/></plist>\n";
+        assert_eq!(detect_input_format(bytes), InputFormat::PlistXml);
+    }
+
+    #[test]
+    fn xml_doctype_only_is_detected_as_plist() {
+        // The DOCTYPE line names "plist" even when `<plist>` happens
+        // outside the leading window — we still treat it as plist.
+        let bytes = b"<?xml version=\"1.0\"?>\n\
+            <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+            \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n";
+        assert_eq!(detect_input_format(bytes), InputFormat::PlistXml);
+    }
+
+    #[test]
+    fn xml_non_plist_is_detected_as_xml() {
+        let bytes = b"<?xml version=\"1.0\"?><config><window width=\"800\"/></config>";
+        assert_eq!(detect_input_format(bytes), InputFormat::Xml);
+    }
+
+    #[test]
+    fn xml_with_bom_is_detected() {
+        // UTF-8 BOM is allowed before `<?xml`.
+        let mut bytes = Vec::from(&b"\xef\xbb\xbf"[..]);
+        bytes.extend_from_slice(b"<?xml version=\"1.0\"?><root/>");
+        assert_eq!(detect_input_format(&bytes), InputFormat::Xml);
+    }
+
+    #[test]
+    fn ini_is_default_fallback() {
+        let bytes = b"[section]\nkey=value\n";
+        assert_eq!(detect_input_format(bytes), InputFormat::Ini);
+
+        // Empty input also falls back to INI.
+        assert_eq!(detect_input_format(b""), InputFormat::Ini);
+
+        // Random binary that isn't a bplist also falls back.
+        assert_eq!(
+            detect_input_format(&[0x00, 0x01, 0x02, 0x03, 0xff]),
+            InputFormat::Ini
+        );
+    }
+
+    #[test]
+    fn html_is_not_xml() {
+        // We require an `<?xml` PI to call something XML.
+        let bytes = b"<!DOCTYPE html><html><body>hi</body></html>";
+        assert_eq!(detect_input_format(bytes), InputFormat::Ini);
+    }
+}
+
+mod sidecar_extension {
+    //! `--add` writes the sidecar source file alongside the modify
+    //! script. The extension must agree with the language-specific
+    //! `source auto-path` lookup that the emitted skeleton uses; we
+    //! also need to preserve binary plist bytes verbatim (no trailing
+    //! `\n`).
+    use super::DummyChezmoi;
+    use crate::Style;
+    use crate::add::Mode;
+    use crate::add::add;
+    use pretty_assertions::assert_eq;
+
+    fn run_add_with(chezmoi: &DummyChezmoi, bytes: &[u8]) {
+        std::fs::write(chezmoi.dummy_file0_path.as_path(), bytes).unwrap();
+        let mut stdout: Vec<u8> = vec![];
+        add(
+            chezmoi,
+            Mode::Normal,
+            false,
+            Style::InPath,
+            chezmoi.dummy_file0_path.as_path(),
+            &mut stdout,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn add_writes_plist_sidecar_for_bplist00_input() {
+        let chezmoi = DummyChezmoi::new();
+        // Minimal bplist payload (header + a few trailing bytes). The
+        // exact body doesn't matter; we only assert the sidecar file
+        // name and verbatim byte preservation.
+        let mut bytes = Vec::from(b"bplist00".as_slice());
+        bytes.extend_from_slice(&[0xd0, 0x08, 0x00, 0x00, 0x00, 0x00]);
+        run_add_with(&chezmoi, &bytes);
+
+        let expected = chezmoi
+            .src_dir
+            .join(format!("{}.src.plist", chezmoi.dummy_file0_name));
+        assert!(expected.exists(), "expected sidecar at {expected}");
+        // Binary bytes must be preserved verbatim (no `\n` appended).
+        let written = std::fs::read(&expected).unwrap();
+        assert_eq!(written, bytes);
+
+        // The wrong-extension files must not exist.
+        let wrong = chezmoi
+            .src_dir
+            .join(format!("{}.src.ini", chezmoi.dummy_file0_name));
+        assert!(!wrong.exists(), "INI sidecar should not exist");
+    }
+
+    #[test]
+    fn add_writes_xml_sidecar_for_xml_input() {
+        let chezmoi = DummyChezmoi::new();
+        let bytes = b"<?xml version=\"1.0\"?>\n<config><window width=\"800\"/></config>\n";
+        run_add_with(&chezmoi, bytes);
+
+        let expected = chezmoi
+            .src_dir
+            .join(format!("{}.src.xml", chezmoi.dummy_file0_name));
+        assert!(expected.exists(), "expected sidecar at {expected}");
+        let plist = chezmoi
+            .src_dir
+            .join(format!("{}.src.plist", chezmoi.dummy_file0_name));
+        let ini = chezmoi
+            .src_dir
+            .join(format!("{}.src.ini", chezmoi.dummy_file0_name));
+        assert!(!plist.exists());
+        assert!(!ini.exists());
+    }
+
+    #[test]
+    fn add_writes_xml_sidecar_for_xml_plist_input() {
+        // The input is XML plist; the skeleton selects `language plist`
+        // and looks up `.src.plist`.
+        let chezmoi = DummyChezmoi::new();
+        let bytes = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+            <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+            \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+            <plist version=\"1.0\"><dict/></plist>\n";
+        run_add_with(&chezmoi, bytes);
+
+        let expected = chezmoi
+            .src_dir
+            .join(format!("{}.src.plist", chezmoi.dummy_file0_name));
+        assert!(expected.exists(), "expected sidecar at {expected}");
+        let xml = chezmoi
+            .src_dir
+            .join(format!("{}.src.xml", chezmoi.dummy_file0_name));
+        let ini = chezmoi
+            .src_dir
+            .join(format!("{}.src.ini", chezmoi.dummy_file0_name));
+        assert!(!xml.exists());
+        assert!(!ini.exists());
+    }
+
+    #[test]
+    fn add_keeps_ini_sidecar_for_ini_input() {
+        // Baseline: an INI input still lands on `.src.ini`.
+        let chezmoi = DummyChezmoi::new();
+        let bytes = b"[a]\nkey=value\n";
+        run_add_with(&chezmoi, bytes);
+
+        let expected = chezmoi
+            .src_dir
+            .join(format!("{}.src.ini", chezmoi.dummy_file0_name));
+        assert!(expected.exists(), "expected sidecar at {expected}");
     }
 }

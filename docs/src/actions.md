@@ -35,11 +35,28 @@ all contexts. Some examples:
 
 ## Order of action matching
 
-Actions come in three flavours:
+Actions come in three flavours for the INI backend:
 
 1. Section matches (always literal matches)
 2. Literal section+key matches
 3. Regular expression section+key matches
+
+The XML and plist backends add a fourth flavour:
+
+4. Path-matcher: a single XPath-like selector that resolves to one (or
+   more, for the plist `[*]` wildcard) concrete nodes in the source or
+   live tree. The directive form is `<directive> path "<selector>"`,
+   e.g. `ignore path "Accounts[name='main'].Password"` or
+   `transform path "/gui/Action[@name='open']/@shortcut" ...`.
+
+   Path-matchers don't interleave with INI section/regex matchers. A
+   given script is single-language (selected by the `language`
+   directive) and only uses the matchers appropriate to that backend.
+   Plist path-matchers resolve in declaration order; multi-match
+   selectors like `[*]` apply to every element they resolve to.
+
+   See [`configuration_files.md`](configuration_files.md#languages) and
+   the [RFC](./dev/xml_support_rfc.md) for the full path grammar.
 
 Not every rule can exist in every variant. For example:
 

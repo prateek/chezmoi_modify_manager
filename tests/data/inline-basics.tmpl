@@ -1,0 +1,34 @@
+#!/this/line/is/ignored/for/integration/tests
+
+ignore section "section-sys-ignored"
+ignore section "section-src-ignored"
+ignore regex ".*" ".*_ignored$"
+---
+; both comment
+line_both = True
+line_src=True
+line_src_ignored=False
+
+[section-both]
+line_both = True
+line_both_ignored = True
+line_src = True
+line_src_ignored = False
+line_formatting_nospaces_src=123
+line_formatting_mismatch_1=123
+line_formatting_mismatch_2 = 123
+
+[section-both-ignored]
+line_both = True
+
+[section-src]
+; src comment
+line_src = True
+line_src_ignored = False
+
+[section-src-ignored]
+line_src = True
+line_src_ignored = False
+
+[section][weird-kde-style]
+something = Yes really

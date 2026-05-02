@@ -1,0 +1,6 @@
+{
+  "shortcuts": {
+    "open": {"key": "Cmd-O"},
+    "save": {"key": "Cmd-S"}
+  }
+}

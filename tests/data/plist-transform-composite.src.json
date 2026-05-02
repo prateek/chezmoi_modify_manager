@@ -1,0 +1,9 @@
+{
+  "browserHostWhitelist": ["github.com", "anthropic.com"],
+  "sidebar": {"width": 240, "showFavorites": true},
+  "shortcuts": {
+    "openTab": {"key": "Cmd-T", "modifiers": ["cmd"]},
+    "closeTab": {"key": "Cmd-W", "modifiers": ["cmd"]}
+  },
+  "theme": "dark"
+}

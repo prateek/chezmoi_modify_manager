@@ -44,6 +44,7 @@ anyhow = { version = "1.0.102", features = [
     "backtrace",
     "std",
 ], default-features = false }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
 bpaf = { version = "0.9", features = [
     "autocomplete",
     "derive",
@@ -57,8 +58,11 @@ ini-merge = { version = "0.7.0", default-features = false }
 itertools = { version = "0.14.0", default-features = false }
 log = { version = "0.4.29", default-features = false }
 medic = { version = "0.3.4" }
+memchr = { version = "2", default-features = false, features = ["std"] }
+plist = { version = "1.9", default-features = false }
 regex = "1.12.3"
 rpassword = "7.4.0"
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
 strum = { version = "0.27.2", features = [
     "derive",
     "std",
@@ -69,15 +73,47 @@ winnow = { version = "0.7.14", default-features = false, features = [
     "simd",
     "std",
 ] }
+xmlparser = { version = "0.13", default-features = false, features = ["std"] }
 
 [dev-dependencies]
+# Latency-targeted regression benchmarks live in `benches/`. They use
+# `sample_size(20)` so `cargo bench` finishes in CI-friendly time; the
+# point is regression detection, not absolute performance vs the INI
+# backend.
+criterion = { version = "0.5", default-features = false, features = [
+    "cargo_bench_support",
+] }
 pathdiff = { version = "0.2.3", features = [
     "camino",
 ], default-features = false }
 pretty_assertions = { version = "1.4.1", default-features = false, features = [
     "std",
 ] }
+proptest = { version = "1", default-features = false, features = ["std"] }
 tempfile = { version = "3.27.0", default-features = false }
+
+# Each benchmark has a documented latency ceiling — see the file header.
+# A failing CI bench means a backend regressed past that ceiling, not
+# that performance fell behind a hand-tuned INI baseline.
+[[bench]]
+name = "plist_merge_dotfile"
+harness = false
+
+[[bench]]
+name = "plist_merge_large"
+harness = false
+
+[[bench]]
+name = "xml_patch_kde"
+harness = false
+
+[[bench]]
+name = "path_resolve_deep"
+harness = false
+
+[[bench]]
+name = "json_to_plist_encode"
+harness = false
 
 [lints.rust]
 elided_lifetimes_in_paths = "warn"
